@@ -86,6 +86,8 @@ def test_mat():
 
 def test_pss():
     uniques = acpi.parse_cpu_method("_PSS")
+    # We special-case None here to avoid a double-failure for CPUs without a _PSS
+    testsuite.test("_PSS must be identical for all CPUs", len(uniques) <= 1 or (len(uniques) == 2 and None in uniques))
     for pss, cpupaths in uniques.iteritems():
         if not testsuite.test("_PSS must exist", pss is not None):
             testsuite.print_detail(acpi.factor_commonprefix(cpupaths))
@@ -114,9 +116,8 @@ def test_pss():
 
 def test_pstates():
     """Execute and verify frequency for each Pstate in the _PSS"""
-    with bits.mwait.use_hint():
-        IA32_PERF_CTL = 0x199
-
+    IA32_PERF_CTL = 0x199
+    with bits.mwait.use_hint(), bits.preserve_msr(IA32_PERF_CTL):
         cpupath_procid = acpi.find_procid()
         cpupath_uid = acpi.find_uid()
         apic = acpi.parse_apic()
@@ -146,8 +147,6 @@ def test_pstates():
                 testsuite.print_detail('No _PSS exists')
                 continue
 
-            print "Test duration is ~{} seconds...".format(len(pss.pstates) + 2)
-
             for n, pstate in enumerate(pss.pstates):
                 for cpupath in cpupaths:
                     apicid = cpupath_apicid(cpupath)
@@ -167,13 +166,20 @@ def test_pstates():
                         while (time.time() - start < 2):
                             pass
 
-                # Abort the test if no cpu frequency is not available
-                frequency_data = bits.cpu_frequency()
-                if frequency_data is None:
-                    continue
-                aperf = frequency_data[1]
-                aperf = testutil.adjust_to_nearest(aperf, bclk/2)
-                aperf = int(aperf / 1000000)
+                for duration in (0.1, 1.0):
+                    frequency_data = bits.cpu_frequency(duration)
+                    # Abort the test if no cpu frequency is not available
+                    if frequency_data is None:
+                        continue
+                    aperf = frequency_data[1]
+                    aperf = testutil.adjust_to_nearest(aperf, bclk/2)
+                    aperf = int(aperf / 1000000)
+                    if turbo:
+                        if aperf >= pstate.core_frequency:
+                            break
+                    else:
+                        if aperf == pstate.core_frequency:
+                            break
 
                 if turbo:
                     testsuite.test("P{}: Turbo measured frequency {} >= expected {} MHz".format(n, aperf, pstate.core_frequency), aperf >= pstate.core_frequency)

@@ -236,7 +236,8 @@ def apicid_to_index():
     global cpulist
     return dict([(apicid, i) for (i, apicid) in enumerate(cpulist)])
 
-def cpu_frequency():
+def cpu_frequency(duration=1.0):
+    """Compute the CPU frequency over the given duration (default 1 second)"""
     global cpulist
     IA32_MPERF_MSR = 0xE7
     IA32_APERF_MSR = 0xE8
@@ -262,16 +263,33 @@ def cpu_frequency():
 
     # Needs to busywait, not sleep
     start = time.time()
-    while (time.time() - start < 1):
+    while (time.time() - start < duration):
         pass
 
     mperf = rdmsr(bsp_apicid(), IA32_MPERF_MSR)
     aperf = rdmsr(bsp_apicid(), IA32_APERF_MSR)
-    tsc_delta = rdmsr(bsp_apicid(), IA32_TIME_STAMP_COUNTER_MSR) - tsc_start
+    tsc_delta = (rdmsr(bsp_apicid(), IA32_TIME_STAMP_COUNTER_MSR) - tsc_start) / duration
 
     mperf_hz = tsc_delta
     aperf_hz = int( (float(aperf)/mperf) * tsc_delta)
     return mperf_hz, aperf_hz
+
+class preserve_msr(object):
+    """Context manager to preserve the value of an MSR around a block"""
+    def __init__(self, msr):
+        self.msr = msr
+
+    # Context management protocol
+    def __enter__(self):
+        values = {}
+        for cpu in cpus():
+            values[cpu] = rdmsr(cpu, self.msr)
+        self.values = values
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        for cpu, value in self.values.iteritems():
+            if value is not None:
+                wrmsr(cpu, self.msr, value)
 
 def print_hz(hz):
     temp = hz / (1000.0 * 1000 * 1000)
@@ -316,3 +334,12 @@ def dumpmem(mem, addr=0):
                 s += '.'
         s += '\n'
     return s
+
+def set_func_ptr(funcptr_ptr, wrapper):
+    """Set a C function pointer to a ctypes-wrapped Python function
+
+    C code should export the address of the function pointer using
+    PyLong_FromVoidPtr. Python code should pass that address as the first
+    argument, and the wrapper as the second argument. Python code must maintain
+    a reference to the wrapper to prevent it from being garbage-collected."""
+    ctypes.c_ulong.from_address(funcptr_ptr).value = ctypes.cast(wrapper, ctypes.c_void_p).value

@@ -798,22 +798,22 @@ def _acpi_object_from_python(obj):
     if isinstance(obj, tuple):
         return (ACPI_TYPE_PACKAGE, tuple(_acpi_object_from_python(arg) for arg in obj))
 
-acpi_unsafe_io = c_bool.from_address(_acpi.acpi_unsafe_io)
-
 def evaluate(pathname, *args, **kwargs):
     """Evaluate an ACPI method and return the result.
 
-    By default, ACPI method evaluation ignores attempts to read or write I/O
-    ports. Pass the keyword argument unsafe_io=True to explicitly allow I/O."""
+    By default, ACPI method evaluation allows reads and writes of I/O ports.
+    Pass the keyword argument unsafe_io=False to silently ignore I/O
+    operations."""
+    global acpi_unsafe_io
     unsafe_io = kwargs.get("unsafe_io")
     if unsafe_io is not None:
-        old_unsafe_io = acpi_unsafe_io.value
-        acpi_unsafe_io.value = unsafe_io
+        old_unsafe_io = acpi_unsafe_io
+        acpi_unsafe_io = unsafe_io
     try:
         return _acpi_object_to_python(_acpi._eval(pathname, tuple(_acpi_object_from_python(arg) for arg in args)))
     finally:
         if unsafe_io is not None:
-            acpi_unsafe_io.value = old_unsafe_io
+            acpi_unsafe_io = old_unsafe_io
 
 acpi_object_types = {
     ACPI_TYPE_INTEGER: 'ACPI_TYPE_INTEGER',
@@ -4231,7 +4231,18 @@ def display_uid():
         print "_UID = %s" % uid
     display_acpi_method("_UID", print_uid)
 
+_acpica_early_init = CFUNCTYPE(c_bool)(_acpi.acpica_early_init)
 _acpica_init = CFUNCTYPE(c_bool)(_acpi.acpica_init)
+
+def needs_early_init(f, docstring=""):
+    """Wrap a function that requires minimal ACPICA table-parsing initialization"""
+    def acpica_early_init_wrapper(*args):
+        if not _acpica_early_init():
+            raise RuntimeError("ACPICA module failed minimal initialization.")
+        return f(*args)
+    acpica_early_init_wrapper.__doc__ = docstring
+    return acpica_early_init_wrapper
+
 def needs_init(f, docstring=""):
     """Wrap a function that requires ACPICA initialization"""
     def acpica_init_wrapper(*args):
@@ -4241,7 +4252,11 @@ def needs_init(f, docstring=""):
     acpica_init_wrapper.__doc__ = docstring
     return acpica_init_wrapper
 
+AE_OK = 0
+AE_BAD_PARAMETER = 0x1001
+
 ACPI_HANDLE = c_void_p
+ACPI_IO_ADDRESS = c_ulong
 ACPI_OBJECT_TYPE = c_uint32
 ACPI_SIZE = c_ulong
 ACPI_STATUS = c_uint32
@@ -4278,6 +4293,37 @@ def check_status(status):
     if status:
         raise ACPIException(status)
 
+acpi_unsafe_io = True
+
+@CFUNCTYPE(ACPI_STATUS, ACPI_IO_ADDRESS, POINTER(UINT32), UINT32)
+def AcpiOsReadPort(Address, Value, Width):
+    if Width == 8:
+        Value.contents.value = bits.inb(Address) if acpi_unsafe_io else 0xFF
+    elif Width == 16:
+        Value.contents.value = bits.inw(Address) if acpi_unsafe_io else 0xFFFF
+    elif Width == 32:
+        Value.contents.value = bits.inl(Address) if acpi_unsafe_io else 0xFFFFFFFF
+    else:
+        return AE_BAD_PARAMETER
+    return AE_OK
+
+@CFUNCTYPE(ACPI_STATUS, ACPI_IO_ADDRESS, UINT32, UINT32)
+def AcpiOsWritePort(Address, Value, Width):
+    if not acpi_unsafe_io:
+        return AE_OK
+    if Width == 8:
+        bits.outb(Address, Value)
+    elif Width == 16:
+        bits.outw(Address, Value)
+    elif Width == 32:
+        bits.outl(Address, Value)
+    else:
+        return AE_BAD_PARAMETER
+    return AE_OK
+
+bits.set_func_ptr(_acpi.AcpiOsReadPort_ptrptr, AcpiOsReadPort)
+bits.set_func_ptr(_acpi.AcpiOsWritePort_ptrptr, AcpiOsWritePort)
+
 _AcpiGetHandle_docstring = """Get the object handle associated with an ACPI name"""
 AcpiGetHandle = needs_init(CFUNCTYPE(ACPI_STATUS, ACPI_HANDLE, ACPI_STRING, POINTER(ACPI_HANDLE))(_acpi.AcpiGetHandle), _AcpiGetHandle_docstring)
 
@@ -4288,10 +4334,10 @@ _AcpiGetObjectInfo_docstring = """Get info about an ACPI object"""
 AcpiGetObjectInfo = needs_init(CFUNCTYPE(ACPI_STATUS, ACPI_HANDLE, POINTER(c_void_p))(_acpi.AcpiGetObjectInfo), _AcpiGetObjectInfo_docstring)
 
 _AcpiGetTable_docstring = """Return table specified by the signature and instance"""
-AcpiGetTable = needs_init(CFUNCTYPE(ACPI_STATUS, ACPI_STRING, UINT32, POINTER(POINTER(TableHeader)))(_acpi.AcpiGetTable), _AcpiGetTable_docstring)
+AcpiGetTable = needs_early_init(CFUNCTYPE(ACPI_STATUS, ACPI_STRING, UINT32, POINTER(POINTER(TableHeader)))(_acpi.AcpiGetTable), _AcpiGetTable_docstring)
 
 _AcpiGetTableByIndex_docstring = """Return table specified by index"""
-AcpiGetTableByIndex = needs_init(CFUNCTYPE(ACPI_STATUS, UINT32, POINTER(POINTER(TableHeader)))(_acpi.AcpiGetTableByIndex), _AcpiGetTableByIndex_docstring)
+AcpiGetTableByIndex = needs_early_init(CFUNCTYPE(ACPI_STATUS, UINT32, POINTER(POINTER(TableHeader)))(_acpi.AcpiGetTableByIndex), _AcpiGetTableByIndex_docstring)
 
 _AcpiOsGetRootPointer_docstring = """Return the address of the ACPI RSDP table"""
 AcpiOsGetRootPointer = needs_init(CFUNCTYPE(c_ulong)(_acpi.AcpiOsGetRootPointer), _AcpiOsGetRootPointer_docstring)

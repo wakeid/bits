@@ -45,9 +45,9 @@ def turbo_msr(ratio, min_ratio, max_ratio):
     return ratio << 8
 
 def test_hardware_pstates(ratio_to_control_value):
-    with bits.mwait.use_hint():
+    IA32_PERF_CTL = 0x199
+    with bits.mwait.use_hint(), bits.preserve_msr(IA32_PERF_CTL):
         MSR_PLATFORM_INFO = 0xce
-        IA32_PERF_CTL = 0x199
         min_ratio = testmsr.MSR("maximum efficiency ratio", bits.bsp_apicid(), MSR_PLATFORM_INFO, highbit=47, lowbit=40)[0]
         max_ratio = testmsr.MSR("max non-turbo ratio", bits.bsp_apicid(), MSR_PLATFORM_INFO, highbit=15, lowbit=8)[0]
 
@@ -57,11 +57,6 @@ def test_hardware_pstates(ratio_to_control_value):
         if turbo_mode_available:
             last_ratio += 1
 
-        duration = last_ratio - min_ratio + 1
-        if turbo_mode_available:
-            duration += 2
-        print "Test duration is ~{} seconds...".format(duration)
-
         bclk = testutil.adjust_to_nearest(bits.bclk(), 100.0/12) * 1000000
 
         for ratio in range(min_ratio, last_ratio + 1):
@@ -69,19 +64,27 @@ def test_hardware_pstates(ratio_to_control_value):
             for apicid in bits.cpus():
                 bits.wrmsr(apicid, IA32_PERF_CTL, control_value)
 
-            if ratio == max_ratio + 1:
+            turbo = (ratio == max_ratio + 1)
+            if turbo:
                 # Needs to busywait, not sleep
                 start = time.time()
                 while (time.time() - start < 2):
                     pass
 
-            aperf = bits.cpu_frequency()[1]
-            aperf = testutil.adjust_to_nearest(aperf, bclk/2)
-            aperf = int(aperf / 1000000)
-
             expected = int(ratio * bclk / 1000000)
 
-            if ratio == max_ratio + 1:
+            for duration in (0.1, 1.0):
+                aperf = bits.cpu_frequency(duration)[1]
+                aperf = testutil.adjust_to_nearest(aperf, bclk/2)
+                aperf = int(aperf / 1000000)
+                if turbo:
+                    if aperf >= expected:
+                        break
+                else:
+                    if aperf == expected:
+                        break
+
+            if turbo:
                 testsuite.test("Turbo measured frequency {} >= expected {} MHz".format(aperf, expected), aperf >= expected)
             else:
                 testsuite.test("Ratio {} measured frequency {} MHz == expected {} MHz".format(ratio, aperf, expected), aperf == expected)

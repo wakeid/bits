@@ -105,7 +105,7 @@ bool IsEnabledProcessorDev(ACPI_HANDLE ObjHandle)
     return ret;
 }
 
-bool acpica_early_init(void)
+asmlinkage bool acpica_early_init(void)
 {
     if (!acpica_early_init_state) {
         if (AcpiInitializeTables(NULL, 0, 0) != AE_OK)
@@ -139,7 +139,7 @@ asmlinkage bool acpica_init(void)
         return false;
     }
 
-    err = AcpiEnableSubsystem(ACPI_FULL_INITIALIZATION);
+    err = AcpiEnableSubsystem(ACPI_NO_ACPI_ENABLE);
     if (err != AE_OK) {
         dprintf("acpica", "%s failed with error = %x\n", "AcpiEnableSubsystem", err);
         return false;
